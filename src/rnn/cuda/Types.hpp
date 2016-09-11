@@ -11,12 +11,21 @@ struct CuMatrix {
   unsigned rows;
   unsigned cols;
 
+  // The pitch of the rows of the weights matrix in bytes.
+  size_t pitch;
+
   // Data pointers allocated with cudaMallocPitch. Logical size is (rows * cols).
   // Elements are stored in row major format (inner loop traverses across a given row).
   float *data;
 
-  // The pitch of the rows of the weights matrix in bytes.
-  size_t pitch;
+  CuMatrix() = default;
+  CuMatrix(unsigned rows, unsigned cols, size_t pitch, float *data)
+      : rows(rows), cols(cols), pitch(pitch), data(data) {}
+
+  static inline CuMatrix FromBuffer(const CuMatrix &buf, unsigned blockRows, unsigned index) {
+    return CuMatrix(blockRows, buf.cols, buf.pitch,
+                    (float *)((char *)buf.data + index * blockRows * buf.pitch));
+  }
 };
 
 struct TargetOutput {

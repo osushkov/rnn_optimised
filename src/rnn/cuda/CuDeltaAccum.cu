@@ -7,20 +7,25 @@ using namespace rnn;
 using namespace rnn::cuda;
 
 CuDeltaAccum::CuDeltaAccum(const RNNSpec &spec, unsigned maxTraceLength) {
-
   assert(maxTraceLength > 0);
 
   allDeltaAccum.reserve(maxTraceLength * spec.layers.size());
-  for (int timestamp = 0; timestamp < maxTraceLength; timestamp++) {
-    for (const auto &layer : spec.layers) {
-      allDeltaAccum.emplace_back(layer.uid, timestamp, spec.maxBatchSize, layer.numNodes);
+  accumBuffers.reserve(spec.layers.size());
+
+  for (const auto &layer : spec.layers) {
+    CuMatrix buffer = util::AllocMatrix(spec.maxBatchSize * maxTraceLength, layer.numNodes);
+    accumBuffers.push_back(buffer);
+
+    for (int timestamp = 0; timestamp < maxTraceLength; timestamp++) {
+      allDeltaAccum.emplace_back(layer.uid, timestamp,
+                                 CuMatrix::FromBuffer(buffer, spec.maxBatchSize, timestamp));
     }
   }
 }
 
 void CuDeltaAccum::Cleanup(void) {
-  for (auto &da : allDeltaAccum) {
-    da.Cleanup();
+  for (auto &ab : accumBuffers) {
+    util::FreeMatrix(ab);
   }
 }
 
@@ -33,11 +38,4 @@ CuLayerAccum *CuDeltaAccum::GetDelta(unsigned layerId, int timestamp) {
 
   assert(false);
   return nullptr;
-}
-
-void CuDeltaAccum::Clear(void) {
-  for (auto &da : allDeltaAccum) {
-    da.samples = 0;
-    MatrixFillKernel::Apply(da.accumDelta, 0.0f, 0);
-  }
 }

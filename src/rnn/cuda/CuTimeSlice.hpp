@@ -20,14 +20,10 @@ struct CuConnectionMemoryData {
   CuMatrix activation; // batch output, row per batch element.
   CuMatrix derivative;
 
-  CuConnectionMemoryData(const LayerConnection &connection, unsigned rows, unsigned cols)
-      : connection(connection), haveActivation(false), activation(util::AllocMatrix(rows, cols)),
-        derivative(util::AllocMatrix(rows, cols)) {}
-
-  void Cleanup(void) {
-    util::FreeMatrix(activation);
-    util::FreeMatrix(derivative);
-  }
+  CuConnectionMemoryData(const LayerConnection &connection, CuMatrix activation,
+                         CuMatrix derivative)
+      : connection(connection), haveActivation(false), activation(activation),
+        derivative(derivative) {}
 };
 
 struct CuTimeSlice {
@@ -35,8 +31,8 @@ struct CuTimeSlice {
   CuConnectionMemoryData networkOutput;
   vector<CuConnectionMemoryData> connectionData;
 
-  CuTimeSlice(const RNNSpec &spec, int timestamp);
-  void Cleanup(void);
+  CuTimeSlice(const RNNSpec &spec, int timestamp,
+              const vector<pair<LayerConnection, CuMatrix>> &matrixBuffers, CuMatrix outputBuffer);
 
   CuConnectionMemoryData *GetConnectionData(const LayerConnection &connection);
   void Clear(void);

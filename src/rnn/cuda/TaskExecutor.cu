@@ -35,8 +35,14 @@ struct TaskExecutor::TaskExecutorImpl {
       if (t.data.layerActivationData.activation == LayerActivation::SOFTMAX) {
         SoftmaxKernel::Apply(t.data.layerActivationData.layer, stream);
       } else {
-        ActivationKernel::Apply(
-            t.data.layerActivationData.layer, t.data.layerActivationData.activation, stream);
+        if (t.data.layerActivationData.withCopy) {
+          ActivationKernel::Apply(
+              t.data.layerActivationData.layer, t.data.layerActivationData.activation,
+              t.data.layerActivationData.copyLayer, stream);
+        } else {
+          ActivationKernel::Apply(
+              t.data.layerActivationData.layer, t.data.layerActivationData.activation, stream);
+        }
       }
       return;
     case TaskType::ERROR_MEASURE:

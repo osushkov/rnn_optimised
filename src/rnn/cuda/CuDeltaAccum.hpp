@@ -19,21 +19,18 @@ struct CuLayerAccum {
   unsigned samples;
   CuMatrix accumDelta;
 
-  CuLayerAccum(unsigned layerId, int timestamp, unsigned deltaRows, unsigned deltaCols)
-      : layerId(layerId), timestamp(timestamp), samples(0),
-        accumDelta(util::AllocMatrix(deltaRows, deltaCols)) {}
-
-  void Cleanup(void) { util::FreeMatrix(accumDelta); }
+  CuLayerAccum(unsigned layerId, int timestamp, CuMatrix accumDelta)
+      : layerId(layerId), timestamp(timestamp), samples(0), accumDelta(accumDelta) {}
 };
 
 struct CuDeltaAccum {
   vector<CuLayerAccum> allDeltaAccum;
+  vector<CuMatrix> accumBuffers;
 
   CuDeltaAccum(const RNNSpec &spec, unsigned maxTraceLength);
   void Cleanup(void);
 
   CuLayerAccum *GetDelta(unsigned layerId, int timestamp);
-  void Clear(void);
 };
 }
 }

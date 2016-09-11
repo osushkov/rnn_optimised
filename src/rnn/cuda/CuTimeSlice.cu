@@ -7,21 +7,29 @@
 using namespace rnn;
 using namespace rnn::cuda;
 
-CuTimeSlice::CuTimeSlice(const RNNSpec &spec, int timestamp)
+CuTimeSlice::CuTimeSlice(const RNNSpec &spec, int timestamp,
+                         const vector<pair<LayerConnection, CuMatrix>> &matrixBuffers,
+                         CuMatrix outputBuffer)
     : timestamp(timestamp),
-      networkOutput(LayerConnection(0, 0, 0), spec.maxBatchSize, spec.numOutputs + 1) {
+      networkOutput(LayerConnection(0, 0, 0),
+                    CuMatrix::FromBuffer(outputBuffer, spec.maxBatchSize, timestamp * 2),
+                    CuMatrix::FromBuffer(outputBuffer, spec.maxBatchSize, timestamp * 2 + 1)) {
 
   assert(timestamp >= 0);
   for (const auto &connection : spec.connections) {
-    unsigned connectionCols = spec.LayerSize(connection.srcLayerId) + 1;
-    connectionData.emplace_back(connection, spec.maxBatchSize, connectionCols);
-  }
-}
 
-void CuTimeSlice::Cleanup(void) {
-  networkOutput.Cleanup();
-  for (auto &cd : connectionData) {
-    cd.Cleanup();
+    CuMatrix connectionBuf;
+    for (const auto& mb : matrixBuffers) {
+      if (mb.first == connection) {
+        connectionBuf = mb.second;
+        break;
+      }
+    }
+    assert(connectionBuf.cols == spec.LayerSize(connection.srcLayerId) + 1);
+
+    connectionData.emplace_back(connection,
+        CuMatrix::FromBuffer(connectionBuf, spec.maxBatchSize, timestamp * 2),
+        CuMatrix::FromBuffer(connectionBuf, spec.maxBatchSize, timestamp * 2 + 1));
   }
 }
 

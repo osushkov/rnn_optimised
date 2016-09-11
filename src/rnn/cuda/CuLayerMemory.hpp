@@ -17,6 +17,9 @@ public:
   CuTimeSlice *GetTimeSlice(int timestamp);
   void Clear(void);
 
+  CuMatrix outputBuffer;
+  vector<pair<LayerConnection, CuMatrix>> connectionBuffers;
+
 private:
   vector<CuTimeSlice> memory;
 };

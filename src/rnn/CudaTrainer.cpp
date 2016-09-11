@@ -68,7 +68,6 @@ struct CudaTrainer::CudaTrainerImpl {
         gradientAccum(spec), layerMemory(spec, maxTraceLength), adamState(spec) {
     assert(maxTraceLength > 0);
 
-    deltaAccum.Clear();
     gradientAccum.Clear();
     layerMemory.Clear();
     adamState.Clear();
@@ -270,7 +269,10 @@ struct CudaTrainer::CudaTrainerImpl {
 
     for (unsigned i = workerIdx; i < deltaAccum.allDeltaAccum.size(); i += skip) {
       deltaAccum.allDeltaAccum[i].samples = 0;
-      executor.Execute(Task::FillMatrix(deltaAccum.allDeltaAccum[i].accumDelta, 0.0f));
+    }
+
+    for (unsigned i = workerIdx; i < deltaAccum.accumBuffers.size(); i += skip) {
+      executor.Execute(Task::FillMatrix(deltaAccum.accumBuffers[i], 0.0f));
     }
 
     for (unsigned i = workerIdx; i < gradientAccum.allWeightsAccum.size(); i += skip) {
@@ -278,21 +280,24 @@ struct CudaTrainer::CudaTrainerImpl {
       // executor.Execute(Task::FillMatrix(gradientAccum.allWeightsAccum[i].accumGradient, 0.0f));
     }
 
+    if (workerIdx == 0) {
+      executor.Execute(Task::FillMatrix(layerMemory.outputBuffer, 0.0f));
+    }
+
+    for (unsigned i = workerIdx; i < layerMemory.connectionBuffers.size(); i += skip) {
+      // This is so we dont zero out the bias column.
+      CuMatrix trimmed = layerMemory.connectionBuffers[i].second;
+      trimmed.cols--;
+      executor.Execute(Task::FillMatrix(trimmed, 0.0f));
+    }
+
     for (unsigned i = workerIdx; i < spec.maxTraceLength; i += skip) {
       CuTimeSlice *ts = layerMemory.GetTimeSlice(i);
       if (ts != nullptr) {
         ts->networkOutput.haveActivation = false;
-        executor.Execute(Task::FillMatrix(ts->networkOutput.activation, 0.0f));
-        // executor.Execute(Task::FillMatrix(ts->networkOutput.derivative, 0.0f));
 
         for (auto &cd : ts->connectionData) {
           cd.haveActivation = false;
-
-          // This is so we dont zero out the bias column.
-          CuMatrix trimmed = cd.activation;
-          trimmed.cols--;
-          executor.Execute(Task::FillMatrix(trimmed, 0.0f));
-          // executor.Execute(Task::FillMatrix(cd.derivative, 0.0f));
         }
       }
     }
@@ -418,15 +423,23 @@ struct CudaTrainer::CudaTrainerImpl {
 
       ConnectionActivation outActivation(curBatchSize, targetOut->activation,
                                          targetOut->derivative);
-      executor.Execute(Task::LayerActivation(outActivation, layer.activation));
       targetOut->haveActivation = true;
 
-      for (unsigned i = 1; i < outData.size(); i++) {
-        assert(!outData[i]->haveActivation);
+      if (outData.size() == 2) {
+        ConnectionActivation copyActivation(curBatchSize, outData[1]->activation,
+                                            outData[1]->derivative);
+        executor.Execute(Task::LayerActivation(outActivation, layer.activation, copyActivation));
+        outData[1]->haveActivation = true;
+      } else {
+        executor.Execute(Task::LayerActivation(outActivation, layer.activation));
 
-        executor.Execute(Task::CopyMatrixD2D(targetOut->activation, outData[i]->activation));
-        executor.Execute(Task::CopyMatrixD2D(targetOut->derivative, outData[i]->derivative));
-        outData[i]->haveActivation = true;
+        for (unsigned i = 1; i < outData.size(); i++) {
+          assert(!outData[i]->haveActivation);
+
+          executor.Execute(Task::CopyMatrixD2D(targetOut->activation, outData[i]->activation));
+          executor.Execute(Task::CopyMatrixD2D(targetOut->derivative, outData[i]->derivative));
+          outData[i]->haveActivation = true;
+        }
       }
     }
   }

@@ -25,11 +25,19 @@ enum class TaskType {
 
 struct LayerActivationData {
   ConnectionActivation layer;
-  LayerActivation activation;
+  rnn::LayerActivation activation;
+
+  ConnectionActivation copyLayer;
+  bool withCopy;
 
   LayerActivationData() = default;
-  LayerActivationData(ConnectionActivation layer, LayerActivation activation)
-      : layer(layer), activation(activation) {}
+
+  LayerActivationData(ConnectionActivation layer, rnn::LayerActivation activation)
+      : layer(layer), activation(activation), withCopy(false) {}
+
+  LayerActivationData(ConnectionActivation layer, rnn::LayerActivation activation,
+                      ConnectionActivation copyLayer)
+      : layer(layer), activation(activation), copyLayer(copyLayer), withCopy(true) {}
 };
 
 struct ErrorMeasureData {
@@ -203,10 +211,18 @@ struct Task {
   TaskType type;
   TaskData data;
 
-  static Task LayerActivation(ConnectionActivation layer, LayerActivation activation) {
+  static Task LayerActivation(ConnectionActivation layer, rnn::LayerActivation activation) {
     Task task;
     task.type = TaskType::LAYER_ACTIVATION;
     task.data.layerActivationData = LayerActivationData(layer, activation);
+    return task;
+  }
+
+  static inline Task LayerActivation(ConnectionActivation layer, rnn::LayerActivation activation,
+                                     ConnectionActivation copyLayer) {
+    Task task;
+    task.type = TaskType::LAYER_ACTIVATION;
+    task.data.layerActivationData = LayerActivationData(layer, activation, copyLayer);
     return task;
   }
 

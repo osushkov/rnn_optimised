@@ -1,5 +1,6 @@
 
 #include "RNNTrainer.hpp"
+#include "common/Timer.hpp"
 #include <cassert>
 #include <cmath>
 #include <future>
@@ -8,7 +9,7 @@
 using namespace rnn;
 
 static constexpr unsigned TRAINING_SIZE = 100 * 1000 * 1000;
-static constexpr unsigned BATCH_SIZE = 32;
+static constexpr unsigned BATCH_SIZE = 256;
 
 struct RNNTrainer::RNNTrainerImpl {
   unsigned traceLength;
@@ -22,16 +23,23 @@ struct RNNTrainer::RNNTrainerImpl {
     std::future<vector<SliceBatch>> batchData = std::async(
         std::launch::async, [this, &letters]() { return makeBatch(letters, BATCH_SIZE); });
 
-    for (unsigned i = 0; i < iters; i++) {
-      if (i % 100 == 0) {
-        cout << i << "/" << iters << endl;
-      }
+    Timer timer;
 
+    for (unsigned i = 0; i < iters; i++) {
       vector<SliceBatch> curBatch = batchData.get();
       batchData = std::async(std::launch::async,
                              [this, &letters]() { return makeBatch(letters, BATCH_SIZE); });
 
       network->Update(curBatch);
+
+      if (i == 0) {
+        timer.Start();
+      }
+
+      if (i > 0 && i % 1000 == 0) {
+        float seconds = timer.GetElapsedSeconds();
+        cout << i << "/" << iters << " (rate: " << (i / seconds) << " per second)" << endl;
+      }
     }
     network->Refresh();
 
@@ -79,7 +87,7 @@ struct RNNTrainer::RNNTrainerImpl {
 
     spec.numInputs = inputSize;
     spec.numOutputs = outputSize;
-    spec.hiddenActivation = LayerActivation::ELU;
+    spec.hiddenActivation = LayerActivation::TANH;
     spec.outputActivation = LayerActivation::SOFTMAX;
     spec.nodeActivationRate = 1.0f;
 
@@ -94,12 +102,12 @@ struct RNNTrainer::RNNTrainerImpl {
     spec.connections.emplace_back(2, 3, 0);
 
     // Recurrent self-connections for layers 1 and 2.
-    spec.connections.emplace_back(1, 1, 1);
+    // spec.connections.emplace_back(1, 1, 1);
     spec.connections.emplace_back(2, 2, 1);
-    spec.connections.emplace_back(2, 1, 1);
+    // spec.connections.emplace_back(2, 1, 1);
 
     // 2 layers, 1 hidden.
-    spec.layers.emplace_back(1, 768, false);
+    spec.layers.emplace_back(1, 512, false);
     spec.layers.emplace_back(2, 512, false);
     spec.layers.emplace_back(3, outputSize, true);
 
