@@ -46,8 +46,10 @@ struct CudaTrainer::CudaTrainerImpl {
   CuAdamState adamState;
 
   TaskExecutor defaultExecutor;
-  vector<pair<math::MatrixView, math::MatrixView>> inputOutputStaging;
+
+  pair<math::MatrixView, math::MatrixView> inputOutputStaging;
   vector<TargetOutput> traceTargets;
+  CuMatrix traceTargetsBuffer;
 
   mutex m; // controls access to tasks for the workers.
   condition_variable cv;
@@ -76,23 +78,20 @@ struct CudaTrainer::CudaTrainerImpl {
       layers.emplace_back(spec, layerSpec);
     }
 
+    inputOutputStaging.first.rows = spec.maxBatchSize * maxTraceLength;
+    inputOutputStaging.first.cols = spec.numInputs;
+    inputOutputStaging.first.data =
+        (float *)util::AllocPinned(inputOutputStaging.first.rows * spec.numInputs * sizeof(float));
+
+    inputOutputStaging.second.rows = spec.maxBatchSize * maxTraceLength;
+    inputOutputStaging.second.cols = spec.numOutputs;
+    inputOutputStaging.second.data = (float *)util::AllocPinned(inputOutputStaging.second.rows *
+                                                                spec.numOutputs * sizeof(float));
+
+    traceTargetsBuffer = util::AllocMatrix(spec.maxBatchSize * maxTraceLength, spec.numOutputs);
     for (unsigned i = 0; i < maxTraceLength; i++) {
-      math::MatrixView inputStaging;
-      inputStaging.rows = spec.maxBatchSize;
-      inputStaging.cols = spec.numInputs;
-      inputStaging.data =
-          (float *)util::AllocPinned(inputStaging.rows * inputStaging.cols * sizeof(float));
-
-      math::MatrixView outputStaging;
-      outputStaging.rows = spec.maxBatchSize;
-      outputStaging.cols = spec.numOutputs;
-      outputStaging.data =
-          (float *)util::AllocPinned(outputStaging.rows * outputStaging.cols * sizeof(float));
-
-      inputOutputStaging.emplace_back(inputStaging, outputStaging);
-
       traceTargets.emplace_back(spec.maxBatchSize,
-                                util::AllocMatrix(spec.maxBatchSize, spec.numOutputs));
+                                CuMatrix::FromBuffer(traceTargetsBuffer, spec.maxBatchSize, i));
     }
 
     createWorkers(4);
@@ -114,14 +113,9 @@ struct CudaTrainer::CudaTrainerImpl {
     layerMemory.Cleanup();
     adamState.Cleanup();
 
-    for (auto &staging : inputOutputStaging) {
-      util::FreePinned(staging.first.data);
-      util::FreePinned(staging.second.data);
-    }
-
-    for (auto &tt : traceTargets) {
-      util::FreeMatrix(tt.value);
-    }
+    util::FreePinned(inputOutputStaging.first.data);
+    util::FreePinned(inputOutputStaging.second.data);
+    util::FreeMatrix(traceTargetsBuffer);
   }
 
   // TODO: SetWeights and GetWeights can share a whole bunch of code in a separate function, instead
@@ -203,17 +197,24 @@ struct CudaTrainer::CudaTrainerImpl {
   }
 
   void pushTraceToDevice(const vector<SliceBatch> &trace) {
+    size_t inputOffset = 0;
+    size_t outputOffset = 0;
     for (unsigned i = 0; i < trace.size(); i++) {
-      assert(trace[i].batchInput.cols() == inputOutputStaging[i].first.cols);
-      assert(trace[i].batchInput.rows() <= inputOutputStaging[i].first.rows);
-      assert(trace[i].batchOutput.cols() == inputOutputStaging[i].second.cols);
-      assert(trace[i].batchOutput.rows() <= inputOutputStaging[i].second.rows);
+      assert(trace[i].batchInput.cols() == inputOutputStaging.first.cols);
+      // assert(trace[i].batchInput.rows() <= inputOutputStaging[i].first.rows);
+      assert(trace[i].batchOutput.cols() == inputOutputStaging.second.cols);
+      // assert(trace[i].batchOutput.rows() <= inputOutputStaging[i].second.rows);
 
       size_t inputSize = trace[i].batchInput.rows() * trace[i].batchInput.cols() * sizeof(float);
-      memcpy(inputOutputStaging[i].first.data, trace[i].batchInput.data(), inputSize);
+      memcpy(((char *)inputOutputStaging.first.data) + inputOffset, trace[i].batchInput.data(),
+             inputSize);
+      inputOffset += inputSize;
 
       size_t outputSize = trace[i].batchOutput.rows() * trace[i].batchOutput.cols() * sizeof(float);
-      memcpy(inputOutputStaging[i].second.data, trace[i].batchOutput.data(), outputSize);
+      // cout << "wooo: " << (((char *)inputOutputStaging.second.data) + outputOffset) << endl;
+      memcpy(((char *)inputOutputStaging.second.data) + outputOffset, trace[i].batchOutput.data(),
+             outputSize);
+      outputOffset += outputSize;
     }
   }
 
@@ -309,10 +310,16 @@ struct CudaTrainer::CudaTrainerImpl {
       return;
     }
 
+    executor.Execute(Task::CopyMatrixH2D(inputOutputStaging.second, traceTargetsBuffer));
+    for (const auto &cb : layerMemory.connectionBuffers) {
+      if (cb.first.srcLayerId == 0) {
+        executor.Execute(Task::CopyMatrixH2D(inputOutputStaging.first, cb.second));
+      }
+    }
+
     for (int i = 0; i < static_cast<int>(curTraceLength); i++) {
       // Copy the input/output from host to device memory.
       traceTargets[i].batchSize = curBatchSize;
-      executor.Execute(Task::CopyMatrixH2D(inputOutputStaging[i].second, traceTargets[i].value));
 
       CuTimeSlice *ts = layerMemory.GetTimeSlice(i);
       assert(ts != nullptr);
@@ -320,7 +327,6 @@ struct CudaTrainer::CudaTrainerImpl {
       bool foundInput = false;
       for (auto &cd : ts->connectionData) {
         if (cd.connection.srcLayerId == 0) {
-          executor.Execute(Task::CopyMatrixH2D(inputOutputStaging[i].first, cd.activation));
           cd.haveActivation = true;
           foundInput = true;
         }

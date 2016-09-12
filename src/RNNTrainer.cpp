@@ -9,7 +9,7 @@
 using namespace rnn;
 
 static constexpr unsigned TRAINING_SIZE = 100 * 1000 * 1000;
-static constexpr unsigned BATCH_SIZE = 256;
+static constexpr unsigned BATCH_SIZE = 64;
 
 struct RNNTrainer::RNNTrainerImpl {
   unsigned traceLength;
@@ -36,9 +36,10 @@ struct RNNTrainer::RNNTrainerImpl {
         timer.Start();
       }
 
-      if (i > 0 && i % 1000 == 0) {
+      if (i > 0 && i % 100 == 0) {
         float seconds = timer.GetElapsedSeconds();
-        cout << i << "/" << iters << " (rate: " << (i / seconds) << " per second)" << endl;
+        cout << i << "/" << iters << " (rate: " << (i / seconds) << " per second) " << seconds
+             << endl;
       }
     }
     network->Refresh();
@@ -107,8 +108,8 @@ struct RNNTrainer::RNNTrainerImpl {
     // spec.connections.emplace_back(2, 1, 1);
 
     // 2 layers, 1 hidden.
-    spec.layers.emplace_back(1, 512, false);
-    spec.layers.emplace_back(2, 512, false);
+    spec.layers.emplace_back(1, 128, false);
+    spec.layers.emplace_back(2, 128, false);
     spec.layers.emplace_back(3, outputSize, true);
 
     return make_unique<RNN>(spec);
