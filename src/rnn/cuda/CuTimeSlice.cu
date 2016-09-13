@@ -12,8 +12,8 @@ CuTimeSlice::CuTimeSlice(const RNNSpec &spec, int timestamp,
                          CuMatrix outputBuffer)
     : timestamp(timestamp),
       networkOutput(LayerConnection(0, 0, 0),
-                    CuMatrix::FromBuffer(outputBuffer, spec.maxBatchSize, timestamp * 2),
-                    CuMatrix::FromBuffer(outputBuffer, spec.maxBatchSize, timestamp * 2 + 1)) {
+                    CuMatrix::FromBuffer(outputBuffer, spec.maxBatchSize, timestamp),
+                    CuMatrix::FromBuffer(outputBuffer, spec.maxBatchSize, timestamp + spec.maxTraceLength)) {
 
   assert(timestamp >= 0);
   for (const auto &connection : spec.connections) {
@@ -28,8 +28,8 @@ CuTimeSlice::CuTimeSlice(const RNNSpec &spec, int timestamp,
     assert(connectionBuf.cols == spec.LayerSize(connection.srcLayerId) + 1);
 
     connectionData.emplace_back(connection,
-        CuMatrix::FromBuffer(connectionBuf, spec.maxBatchSize, timestamp * 2),
-        CuMatrix::FromBuffer(connectionBuf, spec.maxBatchSize, timestamp * 2 + 1));
+        CuMatrix::FromBuffer(connectionBuf, spec.maxBatchSize, timestamp),
+        CuMatrix::FromBuffer(connectionBuf, spec.maxBatchSize, timestamp + spec.maxTraceLength));
   }
 }
 

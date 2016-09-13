@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CuEvent.hpp"
 #include "Task.hpp"
 #include <memory>
 
@@ -12,6 +13,8 @@ public:
   ~TaskExecutor();
 
   void Execute(const Task &task);
+  void EventSync(CuEvent *event);
+  void EventRecord(CuEvent *event);
 
 private:
   struct TaskExecutorImpl;

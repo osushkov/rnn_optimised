@@ -110,6 +110,18 @@ struct TaskExecutor::TaskExecutorImpl {
       assert(false);
     }
   }
+
+  void EventSync(CuEvent *event) {
+    assert(event != nullptr);
+    cudaEvent_t *cuEvent = (cudaEvent_t *)event->GetCudaEvent();
+    cudaStreamWaitEvent(stream, *cuEvent, 0);
+  }
+
+  void EventRecord(CuEvent *event) {
+    assert(event != nullptr);
+    cudaEvent_t *cuEvent = (cudaEvent_t *)event->GetCudaEvent();
+    cudaEventRecord(*cuEvent, stream);
+  }
 };
 
 TaskExecutor::TaskExecutor() : impl(new TaskExecutorImpl()) {}
@@ -117,3 +129,7 @@ TaskExecutor::TaskExecutor() : impl(new TaskExecutorImpl()) {}
 TaskExecutor::~TaskExecutor() = default;
 
 void TaskExecutor::Execute(const Task &task) { impl->Execute(task); }
+
+void TaskExecutor::EventSync(CuEvent *event) { impl->EventSync(event); }
+
+void TaskExecutor::EventRecord(CuEvent *event) { impl->EventRecord(event); }

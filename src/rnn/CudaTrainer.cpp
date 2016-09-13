@@ -5,6 +5,7 @@
 #include "../math/MatrixView.hpp"
 #include "cuda/CuAdamState.hpp"
 #include "cuda/CuDeltaAccum.hpp"
+#include "cuda/CuEvent.hpp"
 #include "cuda/CuGradientAccum.hpp"
 #include "cuda/CuLayer.hpp"
 #include "cuda/CuLayerMemory.hpp"
@@ -60,6 +61,9 @@ struct CudaTrainer::CudaTrainerImpl {
   unsigned curTraceLength;
   Semaphore taskSem;
 
+  vector<uptr<CuEvent>> deltaPropEvents;
+  Semaphore deltaPropSem;
+
   vector<TrainTask> taskList = {
       TrainTask::CLEAR_BUFFERS, TrainTask::FORWARDPROP, TrainTask::BACKPROP_DELTA,
       TrainTask::COMPUTE_AND_UPDATE_GRADIENTS,
@@ -92,6 +96,10 @@ struct CudaTrainer::CudaTrainerImpl {
     for (unsigned i = 0; i < maxTraceLength; i++) {
       traceTargets.emplace_back(spec.maxBatchSize,
                                 CuMatrix::FromBuffer(traceTargetsBuffer, spec.maxBatchSize, i));
+    }
+
+    for (unsigned i = 0; i < maxTraceLength; i++) {
+      deltaPropEvents.emplace_back(new CuEvent());
     }
 
     createWorkers(4);
@@ -197,24 +205,23 @@ struct CudaTrainer::CudaTrainerImpl {
   }
 
   void pushTraceToDevice(const vector<SliceBatch> &trace) {
-    size_t inputOffset = 0;
-    size_t outputOffset = 0;
+    unsigned inputOffset = 0;
+    unsigned outputOffset = 0;
+
     for (unsigned i = 0; i < trace.size(); i++) {
-      assert(trace[i].batchInput.cols() == inputOutputStaging.first.cols);
+      // assert(trace[i].batchInput.cols() == inputOutputStaging[i].first.cols);
       // assert(trace[i].batchInput.rows() <= inputOutputStaging[i].first.rows);
-      assert(trace[i].batchOutput.cols() == inputOutputStaging.second.cols);
+      // assert(trace[i].batchOutput.cols() == inputOutputStaging[i].second.cols);
       // assert(trace[i].batchOutput.rows() <= inputOutputStaging[i].second.rows);
 
       size_t inputSize = trace[i].batchInput.rows() * trace[i].batchInput.cols() * sizeof(float);
-      memcpy(((char *)inputOutputStaging.first.data) + inputOffset, trace[i].batchInput.data(),
-             inputSize);
-      inputOffset += inputSize;
+      memcpy(inputOutputStaging.first.data + inputOffset, trace[i].batchInput.data(), inputSize);
+      inputOffset += trace[i].batchInput.rows() * trace[i].batchInput.cols();
 
       size_t outputSize = trace[i].batchOutput.rows() * trace[i].batchOutput.cols() * sizeof(float);
-      // cout << "wooo: " << (((char *)inputOutputStaging.second.data) + outputOffset) << endl;
-      memcpy(((char *)inputOutputStaging.second.data) + outputOffset, trace[i].batchOutput.data(),
+      memcpy(inputOutputStaging.second.data + outputOffset, trace[i].batchOutput.data(),
              outputSize);
-      outputOffset += outputSize;
+      outputOffset += trace[i].batchOutput.rows() * trace[i].batchOutput.cols();
     }
   }
 
@@ -310,7 +317,6 @@ struct CudaTrainer::CudaTrainerImpl {
       return;
     }
 
-    executor.Execute(Task::CopyMatrixH2D(inputOutputStaging.second, traceTargetsBuffer));
     for (const auto &cb : layerMemory.connectionBuffers) {
       if (cb.first.srcLayerId == 0) {
         executor.Execute(Task::CopyMatrixH2D(inputOutputStaging.first, cb.second));
@@ -337,16 +343,50 @@ struct CudaTrainer::CudaTrainerImpl {
       forwardProp(executor, i);
       assert(ts->networkOutput.haveActivation);
     }
+
+    executor.Execute(Task::CopyMatrixH2D(inputOutputStaging.second, traceTargetsBuffer));
   }
 
   void workerBackpropDelta(TaskExecutor &executor, unsigned workerIdx) {
-    // BackProp of deltas has no 'trivial' stream level parallelism.
-    if (workerIdx != 0) {
-      return;
-    }
+    if (workerIdx == 0) {
+      for (int i = static_cast<int>(curTraceLength) - 1; i >= 0; i--) {
+        backProp(executor, i);
+        executor.EventRecord(deltaPropEvents[i].get());
+      }
+      deltaPropSem.notify();
+    } else if (workerIdx == 1) {
+      deltaPropSem.wait();
 
-    for (int i = static_cast<int>(curTraceLength) - 1; i >= 0; i--) {
-      backProp(executor, i);
+      for (int timestamp = static_cast<int>(curTraceLength) - 1; timestamp >= 0; timestamp--) {
+        executor.EventSync(deltaPropEvents[timestamp].get());
+
+        for (unsigned i = 0; i < spec.connections.size(); i++) {
+          LayerConnection connection = spec.connections[i];
+          CuConnectionAccum *connAccum = gradientAccum.GetConnection(connection);
+          assert(connAccum != nullptr);
+
+          if (connection.timeOffset == 1 && timestamp == 0) {
+            continue;
+          }
+
+          CuTimeSlice *ts = layerMemory.GetTimeSlice(timestamp);
+          assert(ts != nullptr);
+
+          CuConnectionMemoryData *connData = ts->GetConnectionData(connection);
+          assert(connData != nullptr && connData->haveActivation);
+
+          CuLayerAccum *layerDelta = deltaAccum.GetDelta(connection.dstLayerId, timestamp);
+          assert(layerDelta != nullptr);
+
+          ConnectionActivation activationIn(curBatchSize, connData->activation,
+                                            connData->derivative);
+
+          executor.Execute(
+              Task::GradientIncrement(LayerBatchDeltas(curBatchSize, layerDelta->accumDelta),
+                                      activationIn, connAccum->accumGradient));
+          connAccum->samples++;
+        }
+      }
     }
   }
 
@@ -357,28 +397,6 @@ struct CudaTrainer::CudaTrainerImpl {
       LayerConnection connection = spec.connections[i];
       CuConnectionAccum *connAccum = gradientAccum.GetConnection(connection);
       assert(connAccum != nullptr);
-
-      for (int timestamp = 0; timestamp < static_cast<int>(curTraceLength); timestamp++) {
-        if (connection.timeOffset == 1 && timestamp == 0) {
-          continue;
-        }
-
-        CuTimeSlice *ts = layerMemory.GetTimeSlice(timestamp);
-        assert(ts != nullptr);
-
-        CuConnectionMemoryData *connData = ts->GetConnectionData(connection);
-        assert(connData != nullptr && connData->haveActivation);
-
-        CuLayerAccum *layerDelta = deltaAccum.GetDelta(connection.dstLayerId, timestamp);
-        assert(layerDelta != nullptr);
-
-        ConnectionActivation activationIn(curBatchSize, connData->activation, connData->derivative);
-
-        executor.Execute(
-            Task::GradientIncrement(LayerBatchDeltas(curBatchSize, layerDelta->accumDelta),
-                                    activationIn, connAccum->accumGradient));
-        connAccum->samples++;
-      }
 
       float scaleFactor = 1.0f / static_cast<float>(curBatchSize * connAccum->samples);
       executor.Execute(Task::ScaleMatrix(connAccum->accumGradient, scaleFactor));

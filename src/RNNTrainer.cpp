@@ -4,7 +4,6 @@
 #include <cassert>
 #include <cmath>
 #include <future>
-#include <iostream>
 
 using namespace rnn;
 
@@ -108,8 +107,8 @@ struct RNNTrainer::RNNTrainerImpl {
     // spec.connections.emplace_back(2, 1, 1);
 
     // 2 layers, 1 hidden.
-    spec.layers.emplace_back(1, 128, false);
-    spec.layers.emplace_back(2, 128, false);
+    spec.layers.emplace_back(1, 512, false);
+    spec.layers.emplace_back(2, 512, false);
     spec.layers.emplace_back(3, outputSize, true);
 
     return make_unique<RNN>(spec);
